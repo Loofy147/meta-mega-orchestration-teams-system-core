@@ -1,72 +1,60 @@
 import json
 import os
 
-def process_resource_report(file_path):
+def process_resource_report(report_data):
     """
-    Code Team Task CT-002: Ingests the Data Team's JSON report and processes it.
+    Code Team Task CT-002: Processes the Data Team's JSON report (as a dictionary).
     
     Processing involves:
-    1. Reading the JSON file.
-    2. Validating the presence of key metrics.
-    3. Generating a human-readable summary.
+    1. Validating the presence of key metrics.
+    2. Generating a human-readable summary.
     """
     
-    if not os.path.exists(file_path):
-        return f"Error: Data Team artifact not found at {file_path}"
-
-    try:
-        with open(file_path, 'r') as f:
-            report_data = json.load(f)
-            
-    except json.JSONDecodeError:
-        # Robust Error Handling (Professional Improvement)
-        return f"Error: Data Team artifact at {file_path} is not valid JSON. Processing halted."
-    except Exception as e:
-        return f"Error reading file: {e}"
-
     # --- Validation and Processing ---
-    
+
     # Check for required keys as per Artifact Contract
     required_keys = ["team_id", "resource_type", "metrics"]
     if not all(key in report_data for key in required_keys):
-        return "Error: JSON structure is missing required top-level keys."
+        return {"error": "JSON structure is missing required top-level keys."}
 
     metrics = report_data.get("metrics", {})
     
     # Check for required metrics keys
     required_metrics = ["usage_percent", "size_gb", "used_gb"]
     if not all(key in metrics for key in required_metrics):
-        return "Error: JSON metrics object is missing required keys."
+        return {"error": "JSON metrics object is missing required keys."}
 
-    # Generate Summary
-    summary = f"""
-Code Team (CT-002) Processing Report:
----------------------------------------------
-Source Team: {report_data['team_id']}
-Report Timestamp: {report_data.get('timestamp', 'N/A')}
-Resource Type: {report_data['resource_type']}
+    # CR-003: Formalize Output as a Structured Log Event (JSON)
+    output_data = {
+        "event_type": "RESOURCE_ANALYSIS_COMPLETED",
+        "source_team": report_data['team_id'],
+        "source_timestamp": report_data.get('timestamp', 'N/A'),
+        "processing_status": "SUCCESS",
+        "resource_type": report_data['resource_type'],
+        "metrics_processed": {
+            "disk_usage_percent": metrics['usage_percent'],
+            "total_size_gb": metrics['size_gb'],
+            "used_space_gb": metrics['used_gb']
+        },
+        "actionable_insight": f"The system is operating at {metrics['usage_percent']}% disk capacity. This is well below the 80% threshold, indicating no immediate action is required."
+    }
+    return output_data
 
-Processing Status: SUCCESS
-Disk Usage: {metrics['usage_percent']}%
-Total Size: {metrics['size_gb']} GB
-Used Space: {metrics['used_gb']} GB
-
-Actionable Insight: The system is operating at {metrics['usage_percent']}% disk capacity. This is well below the 80% threshold, indicating no immediate action is required.
----------------------------------------------
-"""
-    return summary
-
-if __name__ == "__main__":
-    # AT-001 Implementation: Subscribe from MQ
-    mq_new_dir = "parallel_orchestration/mq/disk_usage/new"
-    mq_archive_dir = "parallel_orchestration/mq/disk_usage/archive"
+def start_mq_listener():
+    """
+    CR-001: Handles the MQ subscription logic.
+    """
+    # CR-002: Configuration-Driven Paths (Preparation for AT-002)
+    # Default to hardcoded paths if environment variables are not set
+    mq_new_dir = os.environ.get("MQ_NEW_DIR", "parallel_orchestration/mq/disk_usage/new")
+    mq_archive_dir = os.environ.get("MQ_ARCHIVE_DIR", "parallel_orchestration/mq/disk_usage/archive")
     
     # 1. Find the latest message (file) in the 'new' queue
     try:
         messages = [f for f in os.listdir(mq_new_dir) if f.endswith('.json')]
         if not messages:
             print("Code Team (CT-002) Subscriber: No new messages in queue.")
-            exit()
+            return
             
         # Sort by name (which includes timestamp) to get the latest
         latest_message_file = sorted(messages)[-1]
@@ -74,20 +62,41 @@ if __name__ == "__main__":
         
     except Exception as e:
         print(f"Code Team (CT-002) Subscriber Error: Could not read MQ directory. {e}")
-        exit()
+        return
 
-    # 2. Process the message
-    processing_result = process_resource_report(input_file_path)
+    # 2. Read and parse the message
+    try:
+        with open(input_file_path, 'r') as f:
+            report_data = json.load(f)
+    except json.JSONDecodeError:
+        print(f"Error: Data Team artifact at {input_file_path} is not valid JSON. Archiving corrupted message.")
+        # Archive corrupted message to prevent reprocessing
+        os.rename(input_file_path, os.path.join(mq_archive_dir, latest_message_file + ".corrupted"))
+        return
+    except Exception as e:
+        print(f"Error reading file: {e}")
+        return
+
+    # 3. Process the message (passing the dictionary)
+    processing_result_dict = process_resource_report(report_data)
     
-    # 3. Define the output file path for the Code Team's report
-    output_file = "parallel_orchestration/code_team_ct002_report_mq.txt"
+    # Handle potential error string returned by process_resource_report
+    if isinstance(processing_result_dict, str):
+        print(f"Code Team (CT-002) Processing Error: {processing_result_dict}")
+        return
+
+    # 4. Define the output file path for the Code Team's report
+    output_file = os.environ.get("CT_OUTPUT_FILE", "parallel_orchestration/code_team_ct002_report_mq.json")
     
     with open(output_file, 'w') as f:
-        f.write(processing_result)
+        json.dump(processing_result_dict, f, indent=2)
         
     print(f"Code Team (CT-002) processing report written to {output_file}")
     
-    # 4. Consume/Archive the message (Atomic operation)
+    # 5. Consume/Archive the message (Atomic operation)
     archive_file_path = os.path.join(mq_archive_dir, latest_message_file)
     os.rename(input_file_path, archive_file_path)
     print(f"Code Team (CT-002) consumed and archived message: {latest_message_file}")
+
+if __name__ == "__main__":
+    start_mq_listener()
