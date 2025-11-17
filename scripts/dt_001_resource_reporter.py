@@ -2,6 +2,12 @@ import subprocess
 import json
 from datetime import datetime
 import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from scripts.load_env import load_env
+
+# Load environment variables (AT-002)
+load_env(os.path.join(os.path.dirname(__file__), '..', '.env'))
 
 def get_disk_usage():
     """
@@ -82,8 +88,12 @@ def generate_report():
 if __name__ == "__main__":
     final_report = generate_report()
     
-    # AT-001 Implementation: Publish to MQ
-    mq_dir = "parallel_orchestration/mq/disk_usage/new"
+    # AT-001 Implementation: Publish to MQ (now using AT-002 config)
+    mq_dir = os.environ.get("MQ_NEW_DIR")
+    if not mq_dir:
+        print("Error: MQ_NEW_DIR environment variable not set. Cannot publish.")
+        exit(1)
+        
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
     output_path = os.path.join(mq_dir, f"disk_usage_{timestamp}.json")
     

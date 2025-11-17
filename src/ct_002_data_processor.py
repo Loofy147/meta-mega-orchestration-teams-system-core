@@ -1,5 +1,35 @@
 import json
 import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
+from scripts.load_env import load_env
+from datetime import datetime
+
+# Load environment variables (AT-002)
+load_env(os.path.join(os.path.dirname(__file__), '..', '.env'))
+
+def update_health_check(last_processed_data):
+    """
+    AT-003: Updates the centralized health check file upon successful processing.
+    """
+    health_file = os.environ.get("AT_HEALTH_CHECK_FILE")
+    if not health_file:
+        return
+
+    health_data = {
+        "service": "Code Team Processor (CT-002)",
+        "status": "HEALTHY",
+        "last_processed_time": datetime.now().isoformat(),
+        "last_processed_event": last_processed_data.get("event_type", "N/A"),
+        "last_processed_source_time": last_processed_data.get("source_timestamp", "N/A")
+    }
+    
+    try:
+        with open(health_file, 'w') as f:
+            json.dump(health_data, f, indent=2)
+        print(f"Code Team (CT-002) updated health check file: {health_file}")
+    except Exception as e:
+        print(f"Error updating health check file: {e}")
 
 def process_resource_report(report_data):
     """
@@ -45,9 +75,17 @@ def start_mq_listener():
     CR-001: Handles the MQ subscription logic.
     """
     # CR-002: Configuration-Driven Paths (Preparation for AT-002)
-    # Default to hardcoded paths if environment variables are not set
-    mq_new_dir = os.environ.get("MQ_NEW_DIR", "parallel_orchestration/mq/disk_usage/new")
-    mq_archive_dir = os.environ.get("MQ_ARCHIVE_DIR", "parallel_orchestration/mq/disk_usage/archive")
+    mq_new_dir = os.environ.get("MQ_NEW_DIR")
+    mq_archive_dir = os.environ.get("MQ_ARCHIVE_DIR")
+    
+    if not mq_new_dir or not mq_archive_dir:
+        print("Error: MQ_NEW_DIR or MQ_ARCHIVE_DIR environment variables not set. Cannot start listener.")
+        return
+    
+    # Check for health check file path
+    health_file = os.environ.get("AT_HEALTH_CHECK_FILE")
+    if not health_file:
+        print("Warning: AT_HEALTH_CHECK_FILE environment variable not set. Health check will be skipped.")
     
     # 1. Find the latest message (file) in the 'new' queue
     try:
@@ -83,10 +121,14 @@ def start_mq_listener():
     # Handle potential error string returned by process_resource_report
     if isinstance(processing_result_dict, str):
         print(f"Code Team (CT-002) Processing Error: {processing_result_dict}")
+        update_health_check({"event_type": "PROCESSING_ERROR", "source_timestamp": datetime.now().isoformat()})
         return
 
     # 4. Define the output file path for the Code Team's report
-    output_file = os.environ.get("CT_OUTPUT_FILE", "parallel_orchestration/code_team_ct002_report_mq.json")
+    output_file = os.environ.get("CT_OUTPUT_FILE")
+    if not output_file:
+        print("Error: CT_OUTPUT_FILE environment variable not set. Cannot write report.")
+        return
     
     with open(output_file, 'w') as f:
         json.dump(processing_result_dict, f, indent=2)
@@ -97,6 +139,12 @@ def start_mq_listener():
     archive_file_path = os.path.join(mq_archive_dir, latest_message_file)
     os.rename(input_file_path, archive_file_path)
     print(f"Code Team (CT-002) consumed and archived message: {latest_message_file}")
+    
+    # 6. AT-003: Update Health Check File
+    update_health_check(processing_result_dict)
+    
+    # 6. AT-003: Update Health Check File
+    update_health_check(processing_result_dict)
 
 if __name__ == "__main__":
     start_mq_listener()
