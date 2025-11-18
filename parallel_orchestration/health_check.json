@@ -1,0 +1,7 @@
+{
+  "service": "Code Team Processor (CT-002)",
+  "status": "HEALTHY",
+  "last_processed_time": "2025-11-17T14:13:42.183549",
+  "last_processed_event": "RESOURCE_ANALYSIS_COMPLETED",
+  "last_processed_source_time": "2025-11-17T10:00:00.000000"
+}

@@ -66,7 +66,11 @@ def process_resource_report(report_data):
             "total_size_gb": metrics['size_gb'],
             "used_space_gb": metrics['used_gb']
         },
-        "actionable_insight": f"The system is operating at {metrics['usage_percent']}% disk capacity. This is well below the 80% threshold, indicating no immediate action is required."
+        "actionable_insight": (
+            f"The system is operating at {metrics['usage_percent']}% disk capacity. This is exactly the 80% threshold, **immediate action is required**."
+            if metrics['usage_percent'] >= 80 else
+            f"The system is operating at {metrics['usage_percent']}% disk capacity. This is well below the 80% threshold, indicating no immediate action is required."
+        )
     }
     return output_data
 

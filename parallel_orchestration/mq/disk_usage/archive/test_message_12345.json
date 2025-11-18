@@ -1,0 +1,12 @@
+{
+  "timestamp": "2025-11-17T10:00:00.000000",
+  "team_id": "Data Team",
+  "resource_type": "Disk Usage",
+  "metrics": {
+    "filesystem": "/dev/root",
+    "size_gb": 40.0,
+    "used_gb": 32.0,
+    "available_gb": 8.0,
+    "usage_percent": 80
+  }
+}
