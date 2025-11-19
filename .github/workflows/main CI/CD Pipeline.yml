@@ -1,0 +1,41 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e .
+          pip install pytest
+
+      - name: Run Unit Tests (CT-001)
+        # We need to set the environment variables for the tests to run correctly
+        env:
+          MQ_NEW_DIR: parallel_orchestration/mq/disk_usage/new
+          MQ_ARCHIVE_DIR: parallel_orchestration/mq/disk_usage/archive
+          CT_OUTPUT_FILE: parallel_orchestration/code_team_ct002_report_mq.json
+          AT_HEALTH_CHECK_FILE: parallel_orchestration/health_check.json
+        run: pytest tests/
+
+      - name: Build Docker Image (Deployment Readiness Check)
+        run: |
+          docker build -t meta-orchestration-service:latest .
+          
