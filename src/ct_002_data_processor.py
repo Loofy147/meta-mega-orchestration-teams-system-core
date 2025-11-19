@@ -49,28 +49,37 @@ def process_resource_report(report_data):
 
     metrics = report_data.get("metrics", {})
     
-    # Check for required metrics keys
-    required_metrics = ["usage_percent", "size_gb", "used_gb"]
+    # Check for required metrics keys (Updated for DT-002)
+    required_metrics = ["disk_usage_percent", "cpu_usage_percent", "mem_usage_percent"]
     if not all(key in metrics for key in required_metrics):
-        return {"error": "JSON metrics object is missing required keys."}
+        return {"error": f"JSON metrics object is missing required keys. Expected: {required_metrics}. Found: {list(metrics.keys())}"}
 
     # CR-003: Formalize Output as a Structured Log Event (JSON)
+    
+    # --- Actionable Insight Logic (Updated for DT-002) ---
+    disk_percent = metrics['disk_usage_percent']
+    cpu_percent = metrics['cpu_usage_percent']
+    mem_percent = metrics['mem_usage_percent']
+    
+    insight = f"System status: Disk {disk_percent}%, CPU {cpu_percent}%, Mem {mem_percent}%. "
+    
+    if disk_percent >= 80:
+        insight += "CRITICAL: Disk usage is at or above 80% threshold. Immediate action required."
+    elif cpu_percent >= 90:
+        insight += "WARNING: CPU usage is at or above 90% threshold. Investigate process load."
+    elif mem_percent >= 90:
+        insight += "WARNING: Memory usage is at or above 90% threshold. Investigate memory leaks."
+    else:
+        insight += "OK: All primary resource metrics are within acceptable limits."
+        
     output_data = {
         "event_type": "RESOURCE_ANALYSIS_COMPLETED",
         "source_team": report_data['team_id'],
         "source_timestamp": report_data.get('timestamp', 'N/A'),
         "processing_status": "SUCCESS",
         "resource_type": report_data['resource_type'],
-        "metrics_processed": {
-            "disk_usage_percent": metrics['usage_percent'],
-            "total_size_gb": metrics['size_gb'],
-            "used_space_gb": metrics['used_gb']
-        },
-        "actionable_insight": (
-            f"The system is operating at {metrics['usage_percent']}% disk capacity. This is exactly the 80% threshold, **immediate action is required**."
-            if metrics['usage_percent'] >= 80 else
-            f"The system is operating at {metrics['usage_percent']}% disk capacity. This is well below the 80% threshold, indicating no immediate action is required."
-        )
+        "metrics_processed": metrics, # Use all metrics from the Data Team
+        "actionable_insight": insight
     }
     return output_data
 
@@ -143,9 +152,6 @@ def start_mq_listener():
     archive_file_path = os.path.join(mq_archive_dir, latest_message_file)
     os.rename(input_file_path, archive_file_path)
     print(f"Code Team (CT-002) consumed and archived message: {latest_message_file}")
-    
-    # 6. AT-003: Update Health Check File
-    update_health_check(processing_result_dict)
     
     # 6. AT-003: Update Health Check File
     update_health_check(processing_result_dict)
