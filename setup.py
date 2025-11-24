@@ -7,11 +7,14 @@ setup(
     include_package_data=True,
     install_requires=[
         'python-dotenv',
+        'redis',
     ],
     entry_points={
         'console_scripts': [
             'orchestration-listener=src.ct_002_data_processor:start_mq_listener',
             'resource-reporter=scripts.dt_001_resource_reporter:generate_report_and_publish',
+            'security-auditor=src.st_001_config_auditor:run_security_audit',
+            'pdf-generator=src.rt_001_pdf_generator:generate_pdf_report',
         ],
     },
     author='Meta Mega Orchestration Teams',

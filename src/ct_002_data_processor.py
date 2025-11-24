@@ -4,9 +4,23 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from scripts.load_env import load_env
 from datetime import datetime
+import redis
+import time
 
 # Load environment variables (AT-002)
 load_env(os.path.join(os.path.dirname(__file__), '..', '.env'))
+
+# Initialize Redis client (will fail if Redis is not running, but we handle that)
+try:
+    REDIS_CLIENT = redis.Redis(
+        host=os.environ.get("REDIS_HOST"),
+        port=int(os.environ.get("REDIS_PORT")),
+        decode_responses=True
+    )
+    REDIS_CLIENT.ping()
+    REDIS_AVAILABLE = True
+except Exception:
+    REDIS_AVAILABLE = False
 
 def update_health_check(last_processed_data):
     """
@@ -83,29 +97,22 @@ def process_resource_report(report_data):
     }
     return output_data
 
-def start_mq_listener():
+def consume_from_file_system():
     """
-    CR-001: Handles the MQ subscription logic.
+    Fallback: Consumes the latest message from the file system MQ.
     """
-    # CR-002: Configuration-Driven Paths (Preparation for AT-002)
     mq_new_dir = os.environ.get("MQ_NEW_DIR")
     mq_archive_dir = os.environ.get("MQ_ARCHIVE_DIR")
     
     if not mq_new_dir or not mq_archive_dir:
-        print("Error: MQ_NEW_DIR or MQ_ARCHIVE_DIR environment variables not set. Cannot start listener.")
-        return
-    
-    # Check for health check file path
-    health_file = os.environ.get("AT_HEALTH_CHECK_FILE")
-    if not health_file:
-        print("Warning: AT_HEALTH_CHECK_FILE environment variable not set. Health check will be skipped.")
+        print("Error: MQ_NEW_DIR or MQ_ARCHIVE_DIR environment variables not set. Cannot start file system listener.")
+        return None, None, None
     
     # 1. Find the latest message (file) in the 'new' queue
     try:
         messages = [f for f in os.listdir(mq_new_dir) if f.endswith('.json')]
         if not messages:
-            print("Code Team (CT-002) Subscriber: No new messages in queue.")
-            return
+            return None, None, None
             
         # Sort by name (which includes timestamp) to get the latest
         latest_message_file = sorted(messages)[-1]
@@ -113,7 +120,7 @@ def start_mq_listener():
         
     except Exception as e:
         print(f"Code Team (CT-002) Subscriber Error: Could not read MQ directory. {e}")
-        return
+        return None, None, None
 
     # 2. Read and parse the message
     try:
@@ -123,11 +130,90 @@ def start_mq_listener():
         print(f"Error: Data Team artifact at {input_file_path} is not valid JSON. Archiving corrupted message.")
         # Archive corrupted message to prevent reprocessing
         os.rename(input_file_path, os.path.join(mq_archive_dir, latest_message_file + ".corrupted"))
-        return
+        return None, None, None
     except Exception as e:
         print(f"Error reading file: {e}")
-        return
+        return None, None, None
+        
+    # Return data and consumption function
+    def consume_file():
+        archive_file_path = os.path.join(mq_archive_dir, latest_message_file)
+        os.rename(input_file_path, archive_file_path)
+        print(f"Code Team (CT-002) consumed and archived message: {latest_message_file}")
+        
+    return report_data, consume_file, latest_message_file
 
+def consume_from_redis():
+    """
+    Primary: Consumes a message from the Redis Stream MQ.
+    """
+    if not REDIS_AVAILABLE:
+        return None, None, None
+        
+    stream_name = os.environ.get("REDIS_STREAM_NAME")
+    consumer_group = "ct002_group"
+    consumer_name = "ct002_instance"
+    
+    try:
+        # Ensure the consumer group exists
+        try:
+            REDIS_CLIENT.xgroup_create(stream_name, consumer_group, id='0', mkstream=True)
+        except redis.exceptions.ResponseError as e:
+            if 'BUSYGROUP' not in str(e):
+                raise
+                
+        # Read one message from the stream
+        response = REDIS_CLIENT.xreadgroup(
+            consumer_group,
+            consumer_name,
+            {stream_name: '>'},
+            count=1,
+            block=1000 # Block for 1 second
+        )
+        
+        if not response or not response[0][1]:
+            return None, None, None
+            
+        stream_key, messages = response[0]
+        message_id, message_data = messages[0]
+        
+        # The message data is a dictionary of bytes, convert to string/JSON
+        report_data = json.loads(message_data[b'data'].decode('utf-8'))
+        
+        # Return data and consumption function (ACK)
+        def consume_redis():
+            REDIS_CLIENT.xack(stream_name, consumer_group, message_id)
+            print(f"Code Team (CT-002) consumed and ACKed message: {message_id}")
+            
+        return report_data, consume_redis, message_id.decode('utf-8')
+        
+    except Exception as e:
+        print(f"Code Team (CT-002) Redis Subscriber Error: {e}")
+        return None, None, None
+
+def start_mq_listener():
+    """
+    CR-001: Handles the MQ subscription logic with Redis fallback.
+    """
+    mq_type = os.environ.get("MQ_TYPE", "FILE_SYSTEM")
+    
+    report_data = None
+    consume_func = None
+    message_id = None
+    
+    if mq_type == "REDIS_STREAMS" and REDIS_AVAILABLE:
+        print("Code Team (CT-002) Subscriber: Attempting to consume from Redis Streams...")
+        report_data, consume_func, message_id = consume_from_redis()
+    else:
+        if mq_type == "REDIS_STREAMS":
+            print("Code Team (CT-002) Subscriber: Redis Streams requested but not available. Falling back to File System MQ.")
+        
+        report_data, consume_func, message_id = consume_from_file_system()
+        
+    if not report_data:
+        print("Code Team (CT-002) Subscriber: No new messages in queue.")
+        return
+        
     # 3. Process the message (passing the dictionary)
     processing_result_dict = process_resource_report(report_data)
     
@@ -149,9 +235,7 @@ def start_mq_listener():
     print(f"Code Team (CT-002) processing report written to {output_file}")
     
     # 5. Consume/Archive the message (Atomic operation)
-    archive_file_path = os.path.join(mq_archive_dir, latest_message_file)
-    os.rename(input_file_path, archive_file_path)
-    print(f"Code Team (CT-002) consumed and archived message: {latest_message_file}")
+    consume_func()
     
     # 6. AT-003: Update Health Check File
     update_health_check(processing_result_dict)
