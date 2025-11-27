@@ -5,9 +5,22 @@ import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
 from scripts.load_env import load_env
+import redis
 
 # Load environment variables (AT-002)
 load_env(os.path.join(os.path.dirname(__file__), '..', '.env'))
+
+# Initialize Redis client (will fail if Redis is not running, but we handle that)
+try:
+    REDIS_CLIENT = redis.Redis(
+        host=os.environ.get("REDIS_HOST"),
+        port=int(os.environ.get("REDIS_PORT")),
+        decode_responses=True
+    )
+    REDIS_CLIENT.ping()
+    REDIS_AVAILABLE = True
+except Exception:
+    REDIS_AVAILABLE = False
 
 def get_cpu_usage():
     """
@@ -188,36 +201,77 @@ def generate_report():
     
     return report
 
-def generate_report_and_publish():
+def publish_to_file_system(report_data):
     """
-    Entry point for the Data Team's resource reporter.
-    Generates the report and publishes it to the MQ.
+    Fallback: Publishes the report to the file system MQ.
     """
-    final_report = generate_report()
-    
-    # Check if the report is an error structure
-    if final_report.get("status") in ["ERROR", "VALIDATION_ERROR"]:
-        print(f"Data Team (DT-001) failed to generate a valid report: {final_report.get('message')}")
-        # Log the error but do not publish a message to the MQ
-        return
-
-    # AT-001 Implementation: Publish to MQ (now using AT-002 config)
     mq_dir = os.environ.get("MQ_NEW_DIR")
     if not mq_dir:
-        print("Error: MQ_NEW_DIR environment variable not set. Cannot publish.")
+        print("Error: MQ_NEW_DIR environment variable not set. Cannot publish to file system.")
         return
-        
+
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S%f")
     output_path = os.path.join(mq_dir, f"resource_report_{timestamp}.json")
     
     # Ensure atomic write: write to a temp file first, then rename
     temp_path = output_path + ".tmp"
     with open(temp_path, 'w') as f:
-        json.dump(final_report, f, indent=2)
+        json.dump(report_data, f, indent=2)
         
     os.rename(temp_path, output_path)
         
-    print(f"Data Team (DT-001) published message to MQ: {output_path}")
+    print(f"Data Team (DT-001) published message to File System MQ: {output_path}")
+
+def publish_to_redis(report_data):
+    """
+    Primary: Publishes the report to the Redis Stream MQ.
+    """
+    if not REDIS_AVAILABLE:
+        print("Warning: Redis not available. Cannot publish to Redis Stream.")
+        return False
+
+    stream_name = os.environ.get("REDIS_STREAM_NAME")
+    if not stream_name:
+        print("Error: REDIS_STREAM_NAME environment variable not set. Cannot publish to Redis.")
+        return False
+
+    try:
+        # Publish the report data as a JSON string
+        message_id = REDIS_CLIENT.xadd(
+            stream_name,
+            {'data': json.dumps(report_data)},
+            maxlen=1000, # Keep stream size manageable
+            approximate=True
+        )
+        print(f"Data Team (DT-001) published message to Redis Stream: {stream_name} with ID {message_id}")
+        return True
+    except Exception as e:
+        print(f"CRITICAL ERROR publishing to Redis Stream: {e}")
+        return False
+
+def generate_report_and_publish():
+    """
+    Entry point for the Data Team's resource reporter.
+    Generates the report and publishes it to the MQ using Redis-first logic.
+    """
+    final_report = generate_report()
+    
+    # Check if the report is an error structure
+    if final_report.get("status") in ["ERROR", "VALIDATION_ERROR"]:
+        print(f"Data Team (DT-001) failed to generate a valid report: {final_report.get('message')}")
+        return
+
+    mq_type = os.environ.get("MQ_TYPE", "FILE_SYSTEM")
+    
+    if mq_type == "REDIS_STREAMS":
+        if publish_to_redis(final_report):
+            return
+        else:
+            print("CRITICAL: Redis publish failed. Falling back to File System MQ.")
+            publish_to_file_system(final_report)
+            
+    else: # Default to FILE_SYSTEM
+        publish_to_file_system(final_report)
 
 if __name__ == "__main__":
     generate_report_and_publish()
